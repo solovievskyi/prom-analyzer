@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Аналізатор PromPay → 1С</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #22263a;
+    --border: #2e3354; --accent: #6c63ff; --accent2: #4ecdc4;
+    --text: #e8eaf0; --text2: #8b92b0;
+    --green: #4caf8a; --yellow: #f5c842; --red: #e85d75;
+    --orange: #f0883e; --purple: #c792ea;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  header {
+    background: linear-gradient(135deg, #1a1d27, #16192b);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .logo {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  header h1 { font-size: 19px; font-weight: 700; }
+  header p { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+  .container { max-width: 860px; margin: 0 auto; padding: 36px 24px; }
+
+  /* Search */
+  .search-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 28px;
+    margin-bottom: 28px;
+    display: flex; gap: 12px; align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .field { flex: 1; min-width: 220px; }
+  .field label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+  .field input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--text);
+    font-size: 16px;
+    padding: 12px 16px;
+    outline: none;
+    transition: border-color .2s;
+    font-family: monospace;
+  }
+  .field input:focus { border-color: var(--accent); }
+  .field input::placeholder { color: var(--text2); opacity: .5; }
+
+  .btn {
+    background: linear-gradient(135deg, var(--accent), #8b63ff);
+    color: white; border: none;
+    padding: 13px 28px; border-radius: 9px;
+    font-size: 14px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; gap: 8px;
+    transition: opacity .2s; white-space: nowrap;
+  }
+  .btn:hover { opacity: .88; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Error */
+  .error-box {
+    background: rgba(232,93,117,.08); border: 1px solid rgba(232,93,117,.3);
+    border-radius: 10px; padding: 14px 18px; color: var(--red);
+    font-size: 13px; margin-bottom: 20px; display: none;
+  }
+
+  /* Result */
+  #result { display: none; }
+
+  /* Order card */
+  .order-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 24px; margin-bottom: 22px;
+  }
+  .order-title {
+    font-size: 15px; font-weight: 700; margin-bottom: 18px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .order-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+  .meta-item label { font-size: 10.5px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; display: block; margin-bottom: 4px; }
+  .meta-item value { font-size: 13.5px; font-weight: 600; display: block; }
+
+  .tag { display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+  .tag-green  { background: rgba(76,175,138,.15); color: var(--green); border: 1px solid rgba(76,175,138,.3); }
+  .tag-yellow { background: rgba(245,200,66,.12); color: var(--yellow); border: 1px solid rgba(245,200,66,.3); }
+  .tag-red    { background: rgba(232,93,117,.12); color: var(--red); border: 1px solid rgba(232,93,117,.3); }
+  .tag-orange { background: rgba(240,136,62,.12); color: var(--orange); border: 1px solid rgba(240,136,62,.3); }
+  .tag-purple { background: rgba(108,99,255,.15); color: var(--accent); border: 1px solid rgba(108,99,255,.3); }
+  .tag-blue   { background: rgba(78,205,196,.12); color: var(--accent2); border: 1px solid rgba(78,205,196,.3); }
+
+  /* Timeline */
+  .timeline-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden; margin-bottom: 22px;
+  }
+  .timeline-header {
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    padding: 14px 20px; font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .timeline { padding: 8px 0; }
+  .tl-item { display: flex; gap: 0; padding: 0; position: relative; }
+  .tl-left {
+    width: 180px; min-width: 180px;
+    padding: 16px 16px 16px 20px;
+    font-size: 11.5px; color: var(--text2);
+    font-family: monospace;
+    border-right: 2px solid var(--border);
+    display: flex; align-items: flex-start; padding-top: 20px;
+  }
+  .tl-right { flex: 1; padding: 16px 20px; }
+  .tl-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    position: absolute; left: 174px; top: 20px;
+    transform: translateX(-5px);
+    z-index: 1;
+  }
+  .tl-item.ok    .tl-dot { background: var(--green); box-shadow: 0 0 8px rgba(76,175,138,.5); }
+  .tl-item.warn  .tl-dot { background: var(--yellow); box-shadow: 0 0 8px rgba(245,200,66,.5); }
+  .tl-item.err   .tl-dot { background: var(--red); box-shadow: 0 0 8px rgba(232,93,117,.5); }
+  .tl-item.wait  .tl-dot { background: var(--purple); box-shadow: 0 0 8px rgba(199,146,234,.5); }
+  .tl-item.event .tl-dot { background: var(--accent2); box-shadow: 0 0 8px rgba(78,205,196,.5); }
+
+  .tl-title { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
+  .tl-item.ok    .tl-title { color: var(--green); }
+  .tl-item.warn  .tl-title { color: var(--yellow); }
+  .tl-item.err   .tl-title { color: var(--red); }
+  .tl-item.wait  .tl-title { color: var(--purple); }
+  .tl-item.event .tl-title { color: var(--accent2); }
+
+  .tl-desc { font-size: 12px; color: var(--text2); line-height: 1.6; }
+  .tl-desc code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-size: 11px; color: var(--accent2); font-family: monospace; }
+
+  /* Summary */
+  .summary-box {
+    border-radius: 12px; padding: 18px 22px; margin-bottom: 22px;
+    border: 1px solid;
+  }
+  .summary-box.ok   { background: rgba(76,175,138,.08); border-color: rgba(76,175,138,.3); }
+  .summary-box.warn { background: rgba(245,200,66,.07); border-color: rgba(245,200,66,.3); }
+  .summary-box.err  { background: rgba(232,93,117,.08); border-color: rgba(232,93,117,.3); }
+  .summary-box.wait { background: rgba(199,146,234,.08); border-color: rgba(199,146,234,.3); }
+  .summary-box.info { background: rgba(78,205,196,.08); border-color: rgba(78,205,196,.3); }
+
+  .summary-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
+  .summary-box.ok   .summary-label { color: var(--green); }
+  .summary-box.warn .summary-label { color: var(--yellow); }
+  .summary-box.err  .summary-label { color: var(--red); }
+  .summary-box.wait .summary-label { color: var(--purple); }
+  .summary-box.info .summary-label { color: var(--accent2); }
+
+  .summary-text { font-size: 14px; font-weight: 600; line-height: 1.5; }
+
+  @media (max-width: 600px) {
+    .container { padding: 16px; }
+    header { padding: 16px; }
+    .search-box { flex-direction: column; }
+    .tl-left { width: 120px; min-width: 120px; font-size: 10px; }
+    .tl-dot { left: 114px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🔄</div>
+  <div>
+    <h1>Аналізатор PromPay → 1С</h1>
+    <p>Ретроспектива регламенту СинхронизироватьАктивныеЗаказыPromAPI</p>
+  </div>
+</header>
+
+<div class="container">
+
+  <div class="search-box">
+    <div class="field">
+      <label>Номер замовлення Prom</label>
+      <input type="text" id="order-input" placeholder="наприклад: 425675396"
+             onkeydown="if(event.key==='Enter') analyze()">
+    </div>
+    <button class="btn" id="btn" onclick="analyze()">
+      <span id="btn-icon">🔍</span>
+      <span id="btn-text">Аналізувати</span>
+    </button>
+  </div>
+
+  <div class="error-box" id="error-box"></div>
+
+  <div id="result">
+
+    <!-- Summary -->
+    <div class="summary-box" id="summary-box">
+      <div class="summary-label" id="summary-label">Підсумок</div>
+      <div class="summary-text" id="summary-text"></div>
+    </div>
+
+    <!-- Order info -->
+    <div class="order-card">
+      <div class="order-title">
+        📦 Замовлення <span id="oid-badge"></span>
+      </div>
+      <div class="order-grid" id="order-grid"></div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="timeline-wrap">
+      <div class="timeline-header">🕐 Хронологія — що мало відбутись і коли</div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+const STATUS_TAGS = {
+  paid_out: 'tag-green', paid: 'tag-yellow', unpaid: 'tag-purple',
+  expired: 'tag-red', refunded: 'tag-orange',
+};
+const ORDER_STATUS_TAGS = {
+  delivered: 'tag-green', paid: 'tag-green', canceled: 'tag-red',
+  pending: 'tag-blue', received: 'tag-blue',
+};
+
+function showError(msg) {
+  const b = document.getElementById('error-box');
+  b.textContent = '❌ ' + msg;
+  b.style.display = 'block';
+}
+
+function tag(text, cls) {
+  return `<span class="tag ${cls}">${text}</span>`;
+}
+
+async function analyze() {
+  const oid = document.getElementById('order-input').value.trim();
+  if (!oid || !/^\d+$/.test(oid)) {
+    showError('Введіть числовий ID замовлення'); return;
+  }
+
+  document.getElementById('error-box').style.display = 'none';
+  document.getElementById('result').style.display = 'none';
+
+  const btn = document.getElementById('btn');
+  btn.disabled = true;
+  document.getElementById('btn-icon').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('btn-text').textContent = 'Завантаження...';
+
+  try {
+    const resp = await fetch(`/api/analyze?order_id=${oid}`);
+    const data = await resp.json();
+
+    if (!resp.ok || data.error) {
+      showError(data.error || 'Помилка сервера');
+      return;
+    }
+
+    // Summary
+    const sb = document.getElementById('summary-box');
+    sb.className = `summary-box ${data.summary_type}`;
+    const labels = { ok: '✅ Підсумок', warn: '⚠️ Увага', err: '❌ Проблема', wait: '⏳ Очікування', info: 'ℹ️ Інформація' };
+    document.getElementById('summary-label').textContent = labels[data.summary_type] || 'Підсумок';
+    document.getElementById('summary-text').textContent = data.summary;
+
+    // Order badge
+    document.getElementById('oid-badge').innerHTML = tag(`#${data.order_id}`, 'tag-purple');
+
+    // Order grid
+    document.getElementById('order-grid').innerHTML = `
+      <div class="meta-item"><label>Клієнт</label><value>${data.client || '—'}</value></div>
+      <div class="meta-item"><label>Статус Prom</label><value>${tag(data.status || '—', ORDER_STATUS_TAGS[data.status] || 'tag-blue')}</value></div>
+      <div class="meta-item"><label>Спосіб оплати</label><value>${tag(data.is_prompay ? 'PromPay' : data.pay_name, data.is_prompay ? 'tag-purple' : 'tag-blue')}</value></div>
+      <div class="meta-item"><label>Статус оплати</label><value>${tag(data.pay_status || '—', STATUS_TAGS[data.pay_status] || 'tag-blue')}</value></div>
+      <div class="meta-item"><label>Тип оплати</label><value>${tag(data.pay_type || '—', 'tag-blue')}</value></div>
+      <div class="meta-item"><label>Дата зміни оплати</label><value style="font-size:12px">${data.pay_date}</value></div>
+      <div class="meta-item"><label>Сума</label><value>${data.amount}</value></div>
+      <div class="meta-item"><label>ТТН</label><value style="font-size:12px">${data.declaration ? data.declaration + '<br><span style="color:var(--text2);font-size:11px">НП: ' + (data.np_status||'—') + '</span>' : '—'}</value></div>
+    `;
+
+    // Timeline
+    const tl = document.getElementById('timeline');
+    tl.innerHTML = data.timeline.map(item => `
+      <div class="tl-item ${item.type}">
+        <div class="tl-left">${item.date}</div>
+        <div class="tl-dot"></div>
+        <div class="tl-right">
+          <div class="tl-title">${item.title}</div>
+          <div class="tl-desc">${item.desc}</div>
+        </div>
+      </div>
+    `).join('');
+
+    document.getElementById('result').style.display = 'block';
+    document.getElementById('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch(e) {
+    showError('Помилка з\'єднання: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    document.getElementById('btn-icon').textContent = '🔍';
+    document.getElementById('btn-text').textContent = 'Аналізувати';
+  }
+}
+</script>
+</body>
+</html>
