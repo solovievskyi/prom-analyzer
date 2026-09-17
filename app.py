@@ -7,9 +7,9 @@ app = Flask(__name__)
 
 API_TOKEN = os.environ.get("PROM_API_TOKEN", "3850b2862e6b8e1b7f36d8c1bb7ea64ca3c2747f")
 
-# Константи з 1С
 ДНІВ_ДО_ППВ_EVOPAY     = 7
 ДНІВ_ДО_ППВ_RPAY_PARTS = 2
+KYIV_OFFSET = timedelta(hours=3)
 
 
 def parse_iso(s):
@@ -34,13 +34,14 @@ def parse_iso(s):
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return dt.astimezone(timezone.utc)  # завжди в UTC
     except:
         return None
 
 
-def to_kyiv(dt):
-    return dt + timedelta(hours=3) if dt else None
+def kyiv(dt_utc):
+    """UTC → Київ (+3 год)"""
+    return dt_utc + KYIV_OFFSET if dt_utc else None
 
 
 def fmt(dt):
@@ -82,9 +83,12 @@ def analyze_order(order):
     np_st    = (order.get("delivery_provider_data") or {}).get("unified_status")
     canc     = order.get("cancellation")
 
-    dt_mod      = parse_iso(st_mod)
-    dt_mod_kyiv = to_kyiv(dt_mod)
-    IS_PP       = (pay_id == 7586820)
+    # Всі дати в UTC, відображення в Київ (+3)
+    dt_mod_utc  = parse_iso(st_mod)       # status_modified UTC
+    dt_mod_k    = kyiv(dt_mod_utc)        # status_modified Київ (+3)
+
+    IS_PP = (pay_id == 7586820)
+    now   = now_utc()
 
     result = {
         "order_id":     order.get("id"),
@@ -95,8 +99,8 @@ def analyze_order(order):
         "pay_id":       pay_id,
         "pay_status":   pay_st,
         "pay_type":     pay_type,
-        "pay_date":     fmt(dt_mod_kyiv),
-        "pay_date_utc": fmt(dt_mod),
+        "pay_date":     fmt(dt_mod_k),
+        "pay_date_utc": fmt(dt_mod_utc),
         "amount":       order.get("full_price", "—"),
         "declaration":  decl,
         "np_status":    np_st,
@@ -113,94 +117,99 @@ def analyze_order(order):
         result["summary_type"] = "warn"
         return result
 
-    # Крок 1 — завантаження в 1С
-    dt_created      = parse_iso(order.get("date_created"))
-    dt_created_kyiv = to_kyiv(dt_created)
+    # ── Крок 1: Замовлення завантажено в 1С ──────────────────
+    dt_created_utc = parse_iso(order.get("date_created"))
     tl.append({
-        "date":  fmt(dt_created_kyiv),
+        "date":  fmt(kyiv(dt_created_utc)),
         "type":  "event",
         "title": "Замовлення завантажено в 1С",
         "desc":  "СпособОплаты = PromPay → ТолькоПросмотр = Істина (заблоковано). Потрапило у відбір регламенту (ППВ_PromPay_Создан = Ложь)."
     })
 
-    # Крок 2 — зміна статусу оплати
+    # ── Крок 2: Зміна статусу оплати ─────────────────────────
     tl.append({
-        "date":  fmt(dt_mod_kyiv),
+        "date":  fmt(dt_mod_k),
         "type":  "event",
         "title": f"payment_data.status → '{pay_st}'",
-        "desc":  f"Тип оплати: {pay_type} | status_modified: {fmt(dt_mod_kyiv)} Київ ({fmt(dt_mod)} UTC)"
+        "desc":  (
+            f"Тип оплати: {pay_type}<br>"
+            f"status_modified: {fmt(dt_mod_utc)} UTC → {fmt(dt_mod_k)} Київ (+3 год)"
+        )
     })
 
-    now = now_utc()
+    # ── Крок 3: Логіка регламенту ─────────────────────────────
 
-    # ── paid_out ──────────────────────────────────────────────
     if pay_st == "paid_out":
-        dt_ppv_kyiv = dt_mod_kyiv
+        # ДатаППВ = status_modified UTC + 3 год (Київ)
+        dt_ppv_k = dt_mod_k  # вже Київ
 
         tl.append({
-            "date":  fmt(dt_ppv_kyiv),
+            "date":  fmt(dt_ppv_k),
             "type":  "ok",
             "title": "МАЛО СТВОРИТИСЬ ППВ (або вже існує з попереднього кроку)",
             "desc":  (
-                f"Дата ППВ = status_modified + 3 год (UTC→Київ) = {fmt(dt_ppv_kyiv)}.<br>"
-                f"Регламент спочатку перевіряє: чи вже є проведене ППВ по замовленню?<br>"
-                f"• Якщо ППВ є (створили раніше по paid + N днів) → нічого не робимо ✅<br>"
-                f"• Якщо ППВ немає (paid_out прийшов раніше N днів) → створюємо датою {fmt(dt_ppv_kyiv)} ✅"
+                f"Дата ППВ = status_modified + 3 год (UTC→Київ) = {fmt(dt_ppv_k)}.<br>"
+                f"Регламент перевіряє: чи вже є проведене ППВ?<br>"
+                f"• ППВ є (створено раніше по paid + N днів) → нічого не робимо ✅<br>"
+                f"• ППВ немає (paid_out прийшов раніше N днів) → створюємо датою {fmt(dt_ppv_k)} ✅<br>"
+                f"<br>"
+                f"⚠️ Увага: дата коли був статус 'paid' недоступна з API Prom — "
+                f"API зберігає тільки поточний статус. Для точної ретроспективи потрібен "
+                f"реквізит ДатаОплатиPromPay з 1С."
             )
         })
-
-        result["summary"]      = f"paid_out отримано {fmt(dt_ppv_kyiv)}. ППВ мало створитись цією датою (або вже існувало). Перевірте в 1С."
+        result["summary"]      = f"paid_out отримано {fmt(dt_ppv_k)}. ППВ мало створитись цією датою (або раніше по paid+N днів). Перевірте в 1С."
         result["summary_type"] = "ok"
 
-    # ── paid ──────────────────────────────────────────────────
     elif pay_st == "paid":
         days  = ДНІВ_ДО_ППВ_RPAY_PARTS if pay_type == "rpay_parts" else ДНІВ_ДО_ППВ_EVOPAY
         const = "ДнейДоППВ_PromPay_Paid_RPayParts" if pay_type == "rpay_parts" else "ДнейДоППВ_PromPay_Paid"
 
-        # ДатаППВ = status_modified (Київ) + N днів
-        dt_ppv_kyiv = dt_mod_kyiv + timedelta(days=days) if dt_mod_kyiv else None
-        dt_ppv_utc  = dt_mod + timedelta(days=days) if dt_mod else None
-        past        = (now >= dt_ppv_utc) if dt_ppv_utc else False
+        # ДатаОплати Київ = status_modified UTC + 3 год
+        # ДатаППВ Київ    = ДатаОплати Київ + N днів
+        # Порівняння:      ДатаППВ UTC = status_modified UTC + N днів
+        dt_ppv_utc = dt_mod_utc + timedelta(days=days) if dt_mod_utc else None
+        dt_ppv_k   = kyiv(dt_ppv_utc)
+        past       = (now >= dt_ppv_utc) if dt_ppv_utc else False
 
         if past:
             delta = now - dt_ppv_utc
             d, h  = delta.days, delta.seconds // 3600
             tl.append({
-                "date":  fmt(dt_ppv_kyiv),
+                "date":  fmt(dt_ppv_k),
                 "type":  "ok",
                 "title": f"МАЛО СТВОРИТИСЬ ППВ (оплата + {days} днів)",
                 "desc":  (
                     f"Константа {const} = {days} днів.<br>"
-                    f"Дата оплати (paid): {fmt(dt_mod_kyiv)} Київ.<br>"
-                    f"Дата ППВ: {fmt(dt_mod_kyiv)} + {days} дн. = {fmt(dt_ppv_kyiv)}.<br>"
+                    f"Дата оплати (status_modified + 3 год): {fmt(dt_mod_k)} Київ.<br>"
+                    f"Дата ППВ: {fmt(dt_mod_k)} + {days} дн. = {fmt(dt_ppv_k)} Київ.<br>"
                     f"Дата вже минула {d} дн. {h} год. тому.<br>"
-                    f"Сума: ПолучитьСуммуОстаткаОплатыПоЗаказу(КонецДня({fmt(dt_ppv_kyiv)})).<br>"
+                    f"Сума: ПолучитьСуммуОстаткаОплатыПоЗаказу(КонецДня({fmt(dt_ppv_k)})).<br>"
                     f"Якщо після цього прийде paid_out → ППВ вже є → нічого не робимо."
                 )
             })
-            result["summary"]      = f"ППВ мало створитись {fmt(dt_ppv_kyiv)} (paid + {days} днів). Перевірте в 1С чи є проведене ППВ."
+            result["summary"]      = f"ППВ мало створитись {fmt(dt_ppv_k)} (paid + {days} днів). Перевірте в 1С чи є проведене ППВ."
             result["summary_type"] = "ok"
         else:
             if dt_ppv_utc:
                 delta = dt_ppv_utc - now
                 d, h  = delta.days, delta.seconds // 3600
                 tl.append({
-                    "date":  fmt(dt_ppv_kyiv),
+                    "date":  fmt(dt_ppv_k),
                     "type":  "wait",
                     "title": f"ППВ ЩЕ НЕ МАЄ СТВОРЮВАТИСЬ — залишилось {d} дн. {h} год.",
                     "desc":  (
                         f"Константа {const} = {days} днів.<br>"
-                        f"Дата оплати (paid): {fmt(dt_mod_kyiv)} Київ.<br>"
-                        f"Дата ППВ: {fmt(dt_ppv_kyiv)}.<br>"
+                        f"Дата оплати (status_modified + 3 год): {fmt(dt_mod_k)} Київ.<br>"
+                        f"Дата ППВ: {fmt(dt_mod_k)} + {days} дн. = {fmt(dt_ppv_k)} Київ.<br>"
                         f"Замовлення заблоковано (ТолькоПросмотр = Істина).<br>"
-                        f"Регламент кожні 15 хв перевіряє — як настане {fmt(dt_ppv_kyiv)}, створить ППВ.<br>"
-                        f"Або якщо раніше прийде paid_out → одразу створить ППВ по даті paid_out."
+                        f"Регламент кожні 15 хв перевіряє — як настане {fmt(dt_ppv_k)}, створить ППВ.<br>"
+                        f"Або якщо раніше прийде paid_out → одразу створить ППВ по даті paid_out + 3 год."
                     )
                 })
-                result["summary"]      = f"ППВ буде створено {fmt(dt_ppv_kyiv)} — дата ще не настала. Або раніше якщо прийде paid_out."
+                result["summary"]      = f"ППВ буде створено {fmt(dt_ppv_k)} — дата ще не настала. Або раніше якщо прийде paid_out."
                 result["summary_type"] = "wait"
 
-    # ── unpaid ────────────────────────────────────────────────
     elif pay_st == "unpaid":
         tl.append({
             "date":  "—",
@@ -211,13 +220,13 @@ def analyze_order(order):
         result["summary"]      = "ППВ не створюється. Очікуємо оплати клієнта."
         result["summary_type"] = "wait"
 
-    # ── expired ───────────────────────────────────────────────
     elif pay_st == "expired":
         tl.append({
-            "date":  fmt(dt_mod_kyiv),
+            "date":  fmt(dt_mod_k),
             "type":  "err",
             "title": "Час оплати вийшов — ППВ НЕ створюється",
             "desc":  (
+                f"status_modified + 3 год = {fmt(dt_mod_k)} Київ.<br>"
                 f"Регламент мав встановити ППВ_PromPay_Создан = Істина і розблокувати замовлення.<br>"
                 f"Замовлення розблоковується (ТолькоПросмотр = Ложь).<br>"
                 f"Менеджер має вручну обрати новий спосіб оплати."
@@ -226,16 +235,15 @@ def analyze_order(order):
         result["summary"]      = "ППВ не створюється (expired). Замовлення мало розблокуватись — менеджер обирає спосіб оплати."
         result["summary_type"] = "err"
 
-    # ── refunded ──────────────────────────────────────────────
     elif pay_st == "refunded":
         tl.append({
-            "date":  fmt(dt_mod_kyiv),
+            "date":  fmt(dt_mod_k),
             "type":  "warn",
             "title": "Повернення — регламент шукав ППВ і мав створити ППІ",
             "desc":  (
+                f"status_modified + 3 год = {fmt(dt_mod_k)} Київ.<br>"
                 f"Регламент шукає існуюче ППВ по замовленню.<br>"
-                f"Якщо ППВ знайдено → мало створитись ППІ (Платіжне Поручення Вихідне) для повернення.<br>"
-                f"Комісія: константа КомиссияППИ_PromPay_Возврат.<br>"
+                f"Якщо ППВ знайдено → мало створитись ППІ для повернення коштів.<br>"
                 f"ППВ_PromPay_Создан = Істина (знято з моніторингу)."
             )
         })
